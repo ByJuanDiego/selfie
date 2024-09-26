@@ -1,0 +1,30 @@
+    1. en mipster()
+        cambiar la linea == 0 para agregar is_in_used_contexts(to_context)
+
+    2. en emit_fork()
+        solamente hacer un addi de A7 con el SYSCALL_FORK
+        jump back to caller
+
+    3. en emit_wait()
+        hacer load en A0 del SP
+        luego avanzar el SP en WORDSIZE
+        jump back to caller     
+
+    4. en implement_wait()
+        cargar el reg A0
+        verificar si wstatus es 0, en ese caso solo retornar el get_child_exit_id
+        sino, verificar si es un heap_valid_address, en ese caso retornar get_child_exit_id y hacer map_and_store
+        caso contrario, solo retornar -1
+
+    5. en implement_exit()
+        ... luego de hacer el set_exit_code ...
+        si el padre no es MY_CONTEXT entonces setear las variables del hijo (id, status)
+        en el padre decrementar su numero de hijos
+
+    6. crear is_in_used_contexts(uint64_t* context)
+        
+
+    7. en handle_system_call()
+        ... en implement_exit ...
+        si fue el ultimo contexto, delete_context y EXIT
+        si child_number == 0, used_contexts = delete_context

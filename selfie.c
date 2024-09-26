@@ -2254,13 +2254,13 @@ uint64_t *delete_context(uint64_t *context, uint64_t *from);
 // | 29 | free-list head  | pointer to head of free list
 // | 30 | gcs counter     | number of gc runs in gc period
 // | 31 | gc enabled      | flag indicating whether to use gc or not
-// +----+-------------------+
-// | 32 | context_id        | 
-// | 33 | parent_context    | 
-// | 34 | child_exit_id     | 
-// | 35 | child_exit_code   | 
-// | 36 | children_number   | 
-// +----+-------------------+
+// +----+-----------------+
+// | 32 | context_id      | 
+// | 33 | parent_context  | 
+// | 34 | child_exit_id   | 
+// | 35 | child_exit_code | 
+// | 36 | children_number | 
+// +----+-----------------+
 
 // +----+-----------------+
 
@@ -2353,14 +2353,6 @@ uint64_t get_child_exit_id(uint64_t *context) { return *(context + 34); }
 uint64_t get_child_exit_code(uint64_t *context) { return *(context + 35); }
 uint64_t get_children_number(uint64_t *context) { return *(context + 36); }
 
-// | 32 | context_id        | 
-// | 33 | parent_context    | 
-// | 34  | child_status     | 
-// | 35 | child_exit_code   | 
-// | 36 | children_number   | 
-// +----+-------------------+
-
-
 void set_next_context(uint64_t *context, uint64_t *next) { *context = (uint64_t)next; }
 void set_prev_context(uint64_t *context, uint64_t *prev) { *(context + 1) = (uint64_t)prev; }
 void set_pc(uint64_t *context, uint64_t pc) { *(context + 2) = pc; }
@@ -2396,10 +2388,7 @@ void set_free_list_head(uint64_t *context, uint64_t *free_list_head) { *(context
 void set_gcs_in_period(uint64_t *context, uint64_t gcs) { *(context + 30) = gcs; }
 void set_use_gc_kernel(uint64_t *context, uint64_t use) { *(context + 31) = use; }
 
-void set_context_id(uint64_t *context) { 
-  *(context + 32) = pid_seq; 
-  pid_seq = pid_seq + 1; 
-}
+void set_context_id(uint64_t *context) { *(context + 32) = pid_seq; pid_seq = pid_seq + 1;}
 void set_parent_context(uint64_t *context, uint64_t *parent) { *(context + 33) = (uint64_t)parent; }
 void set_child_exit_id(uint64_t *context, uint64_t pid) { *(context + 34) = pid; }
 void set_child_exit_code(uint64_t *context, uint64_t ec) { *(context + 35) = ec; }
@@ -8318,7 +8307,8 @@ void implement_wait(uint64_t *context)
   }
   else if (is_heap_address(context, wstatus))
   {
-    if (get_child_exit_id(context) != (uint64_t)0) {
+    if (get_child_exit_id(context) != (uint64_t)0)
+    {
       *(get_regs(context)+REG_A0) = get_child_exit_id(context);
       map_and_store(context, wstatus, get_child_exit_code(context) * 256);
     }
@@ -8368,7 +8358,7 @@ void implement_exit(uint64_t *context)
   set_exit_code(context, sign_shrink(signed_int_exit_code, SYSCALL_BITWIDTH));
 
   parent_context = get_parent_context(context);
-  if (parent_context != (uint64_t*) 0)
+  if (parent_context != MY_CONTEXT)
   {
     set_child_exit_id(parent_context, get_context_id(context));
     set_child_exit_code(parent_context, get_exit_code(context));
