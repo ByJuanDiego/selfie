@@ -8323,25 +8323,22 @@ void implement_wait(uint64_t *context)
     return;
   }
 
-  wstatus = *(get_regs(context) + REG_A0);
-  
-  if (wstatus == 0)
-  {
-    *(get_regs(context)+REG_A0) = get_child_exit_pid(context);
-  }
-  else if (is_data_stack_heap_address(context, wstatus))
-  {
-    *(get_regs(context)+REG_A0) = get_child_exit_pid(context);
-    map_and_store(context, wstatus, get_child_exit_code(context) * 256); 
-  }
-  else
-  {
-    *(get_regs(context)+REG_A0) = ECHILD;
-  }
-
   if (get_exited_children(context) == 0)
   {
     return;  
+  }
+
+  wstatus = *(get_regs(context) + REG_A0);
+
+  *(get_regs(context)+REG_A0) = get_child_exit_pid(context);
+  
+  if (is_data_stack_heap_address(context, wstatus))
+  {
+    map_and_store(context, wstatus, get_child_exit_code(context) * 256); 
+  }
+  else if (wstatus != 0)
+  {
+    *(get_regs(context)+REG_A0) = ECHILD;
   }
 
   set_pc(context, get_pc(context) + INSTRUCTIONSIZE); 
@@ -8389,14 +8386,6 @@ void implement_exit(uint64_t *context)
     set_child_exit_pid(parent_context, get_context_pid(context));
     set_child_exit_code(parent_context, get_exit_code(context));
     set_exited_children(parent_context, get_exited_children(parent_context) + 1);
-  }
-
-  if (get_exited_children(context) == 0)
-  {
-    if (get_is_parent(context))
-    {
-      return;
-    }
   }
   
   used_contexts = delete_context(context, used_contexts);
