@@ -99,6 +99,8 @@ void exit(int code);
 
 int fork();
 uint64_t wait(uint64_t* wstatus);
+void lock();
+void unlock();
 
 uint64_t read(uint64_t fd, uint64_t *buffer, uint64_t bytes_to_read);
 uint64_t write(uint64_t fd, uint64_t *buffer, uint64_t bytes_to_write);
@@ -1294,6 +1296,12 @@ void implement_wait(uint64_t *context);
 void emit_exit();
 void implement_exit(uint64_t *context);
 
+void emit_lock();
+void implement_lock(uint64_t *context);
+
+void emit_unlock();
+void implement_unlock(uint64_t *context);
+
 void emit_read();
 uint64_t copy_buffer(uint64_t *context, uint64_t vbuffer, uint64_t *buffer, uint64_t size, uint64_t upload);
 void implement_read(uint64_t *context);
@@ -1316,9 +1324,13 @@ uint64_t is_boot_level_zero();
 uint64_t debug_read = 0;
 uint64_t debug_write = 0;
 uint64_t debug_wait = 0;
+uint64_t debug_lock = 0;
+uint64_t debug_unlock = 0;
 uint64_t debug_open = 0;
 uint64_t debug_brk = 0;
 
+uint64_t SYSCALL_LOCK = 30;
+uint64_t SYSCALL_UNLOCK = 31;
 uint64_t SYSCALL_FORK = 777;
 uint64_t SYSCALL_WAIT = 2003;
 uint64_t SYSCALL_EXIT = 93;
@@ -2204,6 +2216,7 @@ void reset_profiler()
 // -----------------------------------------------------------------
 // *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~
 uint64_t old_pid = 1;
+uint64_t locked_pid = -1;
 
 // -----------------------------------------------------------------
 // ------------------------ MACHINE CONTEXTS -----------------------
@@ -2498,6 +2511,7 @@ uint64_t *MY_CONTEXT = (uint64_t *)0;
 uint64_t DONOTEXIT = 0;
 uint64_t EXIT = 1; // extended in symbolic execution engine
 uint64_t ECHILD = -1;
+uint64_t LOCK_FREE = -1;
 
 uint64_t EXITCODE_NOERROR = 0;
 uint64_t EXITCODE_NOARGUMENTS = 11; // leaving 1-10 for apps
@@ -6884,7 +6898,9 @@ void selfie_compile()
 
   emit_fork();
   emit_wait();
-
+  emit_lock();
+  emit_unlock();
+  
   emit_malloc();
 
   emit_switch();
@@ -8368,6 +8384,7 @@ void implement_exit(uint64_t *context)
   // parameter
   uint64_t signed_int_exit_code;
   uint64_t *parent_context;
+  uint64_t context_pid;
 
   if (debug_syscalls)
   {
@@ -8388,7 +8405,75 @@ void implement_exit(uint64_t *context)
     set_exited_children(parent_context, get_exited_children(parent_context) + 1);
   }
   
+  context_pid = get_context_pid(context);
+  if (locked_pid == context_pid)
+  {
+    locked_pid = LOCK_FREE;
+  }
+
   used_contexts = delete_context(context, used_contexts);
+}
+
+void emit_lock()
+{
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("lock"),
+                            0, PROCEDURE, VOID_T, 0, code_size);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_LOCK);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_lock(uint64_t *context)
+{
+  uint64_t context_pid;
+  context_pid = get_context_pid(context);
+
+  if (locked_pid == LOCK_FREE) 
+  {
+    
+    locked_pid = context_pid;
+
+    if (debug_lock)
+    {
+      printf("(lock): lock taken by pid: %lu\n", context_pid);    
+    }
+    
+    set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
+  }
+}
+
+void emit_unlock()
+{
+  create_symbol_table_entry(GLOBAL_TABLE, string_copy("unlock"),
+                            0, PROCEDURE, VOID_T, 0, code_size);
+
+  emit_addi(REG_A7, REG_ZR, SYSCALL_UNLOCK);
+
+  emit_ecall();
+
+  emit_jalr(REG_ZR, REG_RA, 0);
+}
+
+void implement_unlock(uint64_t *context)
+{
+  uint64_t context_pid;
+  context_pid = get_context_pid(context);
+
+  if (locked_pid == context_pid) 
+  {
+    locked_pid = LOCK_FREE;
+
+    if (debug_unlock)
+    {
+      printf("(unlock): lock released by pid: %lu\n", context_pid);    
+    }
+  
+  }
+
+  set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
 }
 
 void emit_read()
@@ -11083,20 +11168,24 @@ void do_ecall()
       read_register(REG_A0);
     }
     else {
-      read_register(REG_A0);
+      if (*(registers + REG_A7) != SYSCALL_LOCK) {
+        if (*(registers + REG_A7) != SYSCALL_UNLOCK) {
+          read_register(REG_A0);
 
-      if (*(registers + REG_A7) != SYSCALL_EXIT)
-      {
-        if (*(registers + REG_A7) != SYSCALL_BRK)
-        {
-          read_register(REG_A1);
-          read_register(REG_A2);
+          if (*(registers + REG_A7) != SYSCALL_EXIT)
+          {
+            if (*(registers + REG_A7) != SYSCALL_BRK)
+            {
+              read_register(REG_A1);
+              read_register(REG_A2);
 
-          if (*(registers + REG_A7) == SYSCALL_OPENAT)
-            read_register(REG_A3);
+              if (*(registers + REG_A7) == SYSCALL_OPENAT)
+                read_register(REG_A3);
+            }
+
+            write_register(REG_A0);
+          }
         }
-
-        write_register(REG_A0);
       }
     }
 
@@ -12896,6 +12985,10 @@ uint64_t handle_system_call(uint64_t *context)
     implement_fork(context);
   else if (a7 == SYSCALL_WAIT)
     implement_wait(context);
+  else if (a7 == SYSCALL_LOCK)
+    implement_lock(context);
+  else if (a7 == SYSCALL_UNLOCK)
+    implement_unlock(context);
   else if (a7 == SYSCALL_READ)
     implement_read(context);
   else if (a7 == SYSCALL_WRITE)
@@ -13440,8 +13533,12 @@ uint64_t selfie_run(uint64_t machine)
   }
   else if (machine == MIPSTER)
   {
-    // debug_syscalls = 1;
-    // debug_wait = 1;
+    /*
+    debug_syscalls = 1;
+    debug_wait = 1;
+    debug_lock = 1;
+    debug_unlock = 1;
+    */   
   }
 
   reset_interpreter();
