@@ -98,7 +98,7 @@ https://github.com/cksystemsteaching/selfie
 void exit(int code);
 
 int fork();
-uint64_t wait(uint64_t* wstatus);
+uint64_t wait(uint64_t *wstatus);
 void lock();
 void unlock();
 
@@ -1287,7 +1287,7 @@ void reset_binary_counters()
 // -----------------------------------------------------------------
 
 void emit_fork();
-void copy_virtual_memory(uint64_t* child, uint64_t* parent, uint64_t vaddr, uint64_t end);
+void copy_virtual_memory(uint64_t *child, uint64_t *parent, uint64_t vaddr, uint64_t end);
 void implement_fork(uint64_t *context);
 
 void emit_wait();
@@ -1297,7 +1297,7 @@ void emit_exit();
 void implement_exit(uint64_t *context);
 
 void emit_lock();
-uint64_t is_locked_context_ready();
+uint64_t is_context_ready_to_lock();
 void implement_lock(uint64_t *context);
 
 void emit_unlock();
@@ -2214,7 +2214,7 @@ void reset_profiler()
 // -----------------------------------------------------------------
 // *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~ *~*~
 uint64_t old_pid = 1;
-uint64_t locked_pid = -1;
+uint64_t lock_owner_pid = -1;
 
 // -----------------------------------------------------------------
 // ------------------------ MACHINE CONTEXTS -----------------------
@@ -2228,7 +2228,7 @@ uint64_t *search_context(uint64_t *context, uint64_t *ctxtl);
 uint64_t *find_context(uint64_t *parent, uint64_t *vctxt);
 
 void free_context(uint64_t *context);
-void lock_context(uint64_t *context);
+void lock_waitlist_context(uint64_t *context);
 uint64_t *remove_context(uint64_t *context, uint64_t *from);
 uint64_t *delete_context(uint64_t *context, uint64_t *from);
 
@@ -2276,9 +2276,6 @@ uint64_t *delete_context(uint64_t *context, uint64_t *from);
 // | 36 | child exit code | exit code of the exited child process
 // | 37 | exited children | number of child processes that have exited
 // +----+-----------------+
-// | 38 | next lock       | pointer to next context waiting to acquire a lock
-// +----+-----------------+
-
 
 // number of entries of a machine context:
 // 14 uint64_t + 6 uint64_t* + 1 char* + 7 uint64_t + 2 uint64_t* + 2 uint64_t entries
@@ -2370,8 +2367,6 @@ uint64_t get_child_exit_pid(uint64_t *context) { return *(context + 35); }
 uint64_t get_child_exit_code(uint64_t *context) { return *(context + 36); }
 uint64_t get_exited_children(uint64_t *context) { return *(context + 37); }
 
-uint64_t *get_next_lock(uint64_t *context) { return (uint64_t*) *(context + 38); }
-
 void set_next_context(uint64_t *context, uint64_t *next) { *context = (uint64_t)next; }
 void set_prev_context(uint64_t *context, uint64_t *prev) { *(context + 1) = (uint64_t)prev; }
 void set_pc(uint64_t *context, uint64_t pc) { *(context + 2) = pc; }
@@ -2414,8 +2409,6 @@ void set_child_exit_pid(uint64_t *context, uint64_t ei) { *(context + 35) = ei; 
 void set_child_exit_code(uint64_t *context, uint64_t ec) { *(context + 36) = ec; }
 void set_exited_children(uint64_t *context, uint64_t ec) { *(context + 37) = ec; }
 
-void set_next_lock(uint64_t *context, uint64_t *next) { *(context + 38) = (uint64_t)next; }
-
 // -----------------------------------------------------------------
 // -------------------------- MICROKERNEL --------------------------
 // -----------------------------------------------------------------
@@ -2456,7 +2449,7 @@ uint64_t *current_context = (uint64_t *)0; // context currently running
 
 uint64_t *used_contexts = (uint64_t *)0; // doubly-linked list of used contexts
 uint64_t *free_contexts = (uint64_t *)0; // singly-linked list of free contexts
-uint64_t *locked_contexts = (uint64_t *)0; // singly-linked list of locked contexts
+uint64_t *pending_lock_contexts = (uint64_t *)0; // singly-linked list of contexts waiting for lock acquisition
 
 // ------------------------- INITIALIZATION ------------------------
 
@@ -2518,7 +2511,7 @@ uint64_t *MY_CONTEXT = (uint64_t *)0;
 uint64_t DONOTEXIT = 0;
 uint64_t EXIT = 1; // extended in symbolic execution engine
 uint64_t ECHILD = -1;
-uint64_t LOCK_FREE = -1;
+uint64_t LOCK_UNOWNED = -1;
 
 uint64_t EXITCODE_NOERROR = 0;
 uint64_t EXITCODE_NOARGUMENTS = 11; // leaving 1-10 for apps
@@ -8249,7 +8242,7 @@ void emit_fork()
   emit_jalr(REG_ZR, REG_RA, 0);
 }
 
-void copy_virtual_memory(uint64_t* child, uint64_t* parent, uint64_t vaddr, uint64_t end)
+void copy_virtual_memory(uint64_t *child, uint64_t *parent, uint64_t vaddr, uint64_t end)
 {
   while (vaddr <= end) {
     if (is_virtual_address_mapped(get_pt(parent), vaddr)) {
@@ -8408,9 +8401,9 @@ void implement_exit(uint64_t *context)
   }
   
   context_pid = get_context_pid(context);
-  if (locked_pid == context_pid)
+  if (lock_owner_pid == context_pid)
   {
-    locked_pid = LOCK_FREE;
+    lock_owner_pid = LOCK_UNOWNED;
   }
 
   used_contexts = delete_context(context, used_contexts);
@@ -8428,10 +8421,10 @@ void emit_lock()
   emit_jalr(REG_ZR, REG_RA, 0);
 }
 
-uint64_t is_locked_context_ready() 
+uint64_t is_context_ready_to_lock() 
 {
-  if (locked_pid == LOCK_FREE) {
-    if (locked_contexts != MY_CONTEXT) 
+  if (lock_owner_pid == LOCK_UNOWNED) {
+    if (pending_lock_contexts != MY_CONTEXT) 
     {
       return 1;
     }
@@ -8444,18 +8437,18 @@ void implement_lock(uint64_t *context)
   uint64_t context_pid;
   context_pid = get_context_pid(context);
 
-  if (locked_pid == LOCK_FREE) 
+  if (lock_owner_pid == LOCK_UNOWNED) 
   {
-    locked_pid = context_pid;
+    lock_owner_pid = context_pid;
 
     set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
   } 
   else 
   {
-    if (search_context(context, locked_contexts) != MY_CONTEXT)
+    if (search_context(context, pending_lock_contexts) != MY_CONTEXT)
     {
       remove_context(context, used_contexts);
-      lock_context(context);
+      lock_waitlist_context(context);
     }
   }
 }
@@ -8478,9 +8471,9 @@ void implement_unlock(uint64_t *context)
 
   context_pid = get_context_pid(context);
 
-  if (locked_pid == context_pid) 
+  if (lock_owner_pid == context_pid) 
   {
-    locked_pid = LOCK_FREE;
+    lock_owner_pid = LOCK_UNOWNED;
   }
 
   set_pc(context, get_pc(context) + INSTRUCTIONSIZE);
@@ -12362,7 +12355,7 @@ void init_context(uint64_t *context, uint64_t *parent, uint64_t *vctxt)
 
 uint64_t *search_context(uint64_t *context, uint64_t *ctxtl) 
 {
-  uint64_t* itr;
+  uint64_t *itr;
 
   itr = ctxtl;
 
@@ -12401,11 +12394,11 @@ void free_context(uint64_t *context)
   free_contexts = context;
 }
 
-void lock_context(uint64_t *context)
+void lock_waitlist_context(uint64_t *context)
 {
-  set_next_lock(context, locked_contexts);
+  set_next_context(context, pending_lock_contexts);
 
-  locked_contexts = context;
+  pending_lock_contexts = context;
 }
 
 uint64_t *remove_context(uint64_t *context, uint64_t *from)
@@ -13151,10 +13144,10 @@ uint64_t mipster(uint64_t *to_context)
     }
     else
     {
-      if (is_locked_context_ready())
+      if (is_context_ready_to_lock())
       {
-        to_context = locked_contexts;
-        set_next_context(locked_contexts, get_next_context(locked_contexts));
+        to_context = pending_lock_contexts;
+        set_next_context(pending_lock_contexts, get_next_context(pending_lock_contexts));
       } 
       else 
       {
